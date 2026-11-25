@@ -41,6 +41,7 @@ void pm_periodic_check(void);
 /* Kapanış */
 void pm_begin_shutdown(void);
 void pm_signal_running(int signo);
+void pm_wait_running(void);
 
 int            pm_running_count(void);
 const child_t *pm_children(int *count);

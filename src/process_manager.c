@@ -272,6 +272,29 @@ void pm_signal_running(int signo)
     }
 }
 
+/* SIGKILL sonrası kalanları bloklayarak topla, zombi bırakma */
+void pm_wait_running(void)
+{
+    int i;
+    int status;
+    pid_t r;
+
+    for (i = 0; i < child_count; i++) {
+        child_t *c = &children[i];
+
+        if (c->state != CHILD_RUNNING)
+            continue;
+        do {
+            r = waitpid(c->pid, &status, 0);
+        } while (r == -1 && errno == EINTR);
+
+        if (r == c->pid)
+            handle_exit(c, status);
+        else
+            c->state = CHILD_STOPPED;
+    }
+}
+
 int pm_running_count(void)
 {
     int i;

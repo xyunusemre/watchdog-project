@@ -10,9 +10,17 @@
 #define LOG_FILE         "watchdog.log"
 #define WORKER_PATH      "./worker"
 #define CHECK_INTERVAL   10 /* periyodik kontrol aralığı (sn) */
+#define SHUTDOWN_TIMEOUT 5  /* SIGTERM sonrası SIGKILL'e kadar bekleme (sn) */
 
 /* Argüman verilmezse başlatılacak worker'lar */
 static char *default_specs[] = { "loop", "loop", "exit:20" };
+
+static double now_seconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
 
 static void print_usage(const char *prog)
 {
@@ -27,11 +35,13 @@ static void print_usage(const char *prog)
  * Kapanış sırası:
  * 1) yeni process başlatmayı durdur
  * 2) çalışan worker'lara SIGTERM gönder
- * 3) hepsi bitene kadar bekle ve topla
+ * 3) SHUTDOWN_TIMEOUT kadar bekle, biteni topla
+ * 4) hâlâ yaşayan varsa SIGKILL gönder ve topla
  */
 static void graceful_shutdown(void)
 {
     struct timespec tick = { 0, 100 * 1000 * 1000 }; /* 100 ms */
+    double deadline;
 
     pm_stop_timer();
     pm_begin_shutdown();
@@ -40,13 +50,21 @@ static void graceful_shutdown(void)
     if (pm_running_count() == 0)
         return;
 
-    log_event("sending SIGTERM to %d worker(s)", pm_running_count());
+    log_event("sending SIGTERM to %d worker(s), timeout %d s",
+              pm_running_count(), SHUTDOWN_TIMEOUT);
     pm_signal_running(SIGTERM);
 
-    /* şimdilik süresiz bekle, zaman aşımı ve SIGKILL sonraki adımda */
-    while (pm_running_count() > 0) {
+    deadline = now_seconds() + SHUTDOWN_TIMEOUT;
+    while (pm_running_count() > 0 && now_seconds() < deadline) {
         nanosleep(&tick, NULL);
         pm_reap_children();
+    }
+
+    if (pm_running_count() > 0) {
+        log_event("%d worker(s) still alive after %d s, sending SIGKILL",
+                  pm_running_count(), SHUTDOWN_TIMEOUT);
+        pm_signal_running(SIGKILL);
+        pm_wait_running();
     }
     log_event("all workers stopped");
 }
