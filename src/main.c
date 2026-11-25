@@ -51,6 +51,9 @@ static void graceful_shutdown(void)
 
 static void run_main_loop(void)
 {
+    int count;
+    const child_t *children;
+
     while (!g_shutdown_requested) {
         sm_wait_for_signal();
 
@@ -61,6 +64,11 @@ static void run_main_loop(void)
         if (g_child_exited) {
             g_child_exited = 0;
             pm_reap_children();
+        }
+        if (g_status_requested) {
+            g_status_requested = 0;
+            children = pm_children(&count);
+            log_status_report(children, count);
         }
         if (pm_running_count() == 0) {
             log_event("no running workers left");
