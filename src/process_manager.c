@@ -203,6 +203,55 @@ void pm_reap_children(void)
         log_event("waitpid failed: %s", strerror(errno));
 }
 
+int pm_start_timer(int interval_sec)
+{
+    struct itimerval tv;
+
+    tv.it_interval.tv_sec = interval_sec;
+    tv.it_interval.tv_usec = 0;
+    tv.it_value = tv.it_interval;
+
+    if (setitimer(ITIMER_REAL, &tv, NULL) == -1) {
+        log_event("setitimer failed: %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+void pm_stop_timer(void)
+{
+    struct itimerval tv;
+
+    memset(&tv, 0, sizeof(tv));
+    setitimer(ITIMER_REAL, &tv, NULL);
+}
+
+/*
+ * SIGALRM ile periyodik olarak çağrılır. Kaçırılmış bir SIGCHLD varsa
+ * toplar, sonra çalışıyor görünen her çocuğun gerçekten var olduğunu
+ * kill(pid, 0) ile kontrol eder.
+ */
+void pm_periodic_check(void)
+{
+    int i;
+    int alive = 0;
+
+    pm_reap_children();
+
+    for (i = 0; i < child_count; i++) {
+        child_t *c = &children[i];
+
+        if (c->state != CHILD_RUNNING)
+            continue;
+        if (kill(c->pid, 0) == -1 && errno == ESRCH)
+            log_event("periodic check: worker %d (pid %d) not found",
+                      c->id, (int)c->pid);
+        else
+            alive++;
+    }
+    log_event("periodic check: %d/%d workers running", alive, child_count);
+}
+
 void pm_begin_shutdown(void)
 {
     shutting_down = 1;

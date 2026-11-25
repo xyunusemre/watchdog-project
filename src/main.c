@@ -7,8 +7,9 @@
 #include "process_manager.h"
 #include "logger.h"
 
-#define LOG_FILE    "watchdog.log"
-#define WORKER_PATH "./worker"
+#define LOG_FILE         "watchdog.log"
+#define WORKER_PATH      "./worker"
+#define CHECK_INTERVAL   10 /* periyodik kontrol aralığı (sn) */
 
 /* Argüman verilmezse başlatılacak worker'lar */
 static char *default_specs[] = { "loop", "loop", "exit:20" };
@@ -32,6 +33,7 @@ static void graceful_shutdown(void)
 {
     struct timespec tick = { 0, 100 * 1000 * 1000 }; /* 100 ms */
 
+    pm_stop_timer();
     pm_begin_shutdown();
     pm_reap_children(); /* o ana kadar ölmüş olanları topla */
 
@@ -69,6 +71,10 @@ static void run_main_loop(void)
             g_status_requested = 0;
             children = pm_children(&count);
             log_status_report(children, count);
+        }
+        if (g_timer_fired) {
+            g_timer_fired = 0;
+            pm_periodic_check();
         }
         if (pm_running_count() == 0) {
             log_event("no running workers left");
@@ -110,6 +116,7 @@ int main(int argc, char *argv[])
         log_event("could not start all workers");
         exit_code = EXIT_FAILURE;
     } else {
+        pm_start_timer(CHECK_INTERVAL);
         run_main_loop();
     }
 

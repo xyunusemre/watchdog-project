@@ -33,6 +33,11 @@ int  pm_start_all(void);
 /* SIGCHLD geldikten sonra ana döngüden çağrılır (handler içinden değil) */
 void pm_reap_children(void);
 
+/* SIGALRM ile tetiklenen periyodik kontrol */
+int  pm_start_timer(int interval_sec);
+void pm_stop_timer(void);
+void pm_periodic_check(void);
+
 /* Kapanış */
 void pm_begin_shutdown(void);
 void pm_signal_running(int signo);
