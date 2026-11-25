@@ -30,7 +30,11 @@ typedef struct {
 int  pm_init(const char *worker_path, int count, char *specs[]);
 int  pm_start_all(void);
 
+/* SIGCHLD geldikten sonra ana döngüden çağrılır (handler içinden değil) */
+void pm_reap_children(void);
+
 /* Kapanış */
+void pm_begin_shutdown(void);
 void pm_signal_running(int signo);
 
 int            pm_running_count(void);

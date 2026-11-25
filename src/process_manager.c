@@ -13,6 +13,7 @@
 static child_t     children[MAX_CHILDREN];
 static int         child_count   = 0;
 static const char *worker_path   = NULL;
+static int         shutting_down = 0;
 
 /* "exit:10" gibi bir tanımı mode ve saniye olarak ayırır */
 static int parse_spec(const char *spec, child_t *c)
@@ -66,6 +67,17 @@ int pm_init(const char *path, int count, char *specs[])
     return 0;
 }
 
+static void describe_status(int status, char *buf, size_t size)
+{
+    if (WIFEXITED(status))
+        snprintf(buf, size, "exited with code %d", WEXITSTATUS(status));
+    else if (WIFSIGNALED(status))
+        snprintf(buf, size, "killed by signal %d (%s)",
+                 WTERMSIG(status), strsignal(WTERMSIG(status)));
+    else
+        snprintf(buf, size, "unknown status 0x%x", (unsigned)status);
+}
+
 static int spawn_child(child_t *c)
 {
     pid_t pid = fork();
@@ -117,6 +129,83 @@ int pm_start_all(void)
             return -1;
     }
     return 0;
+}
+
+static child_t *find_child(pid_t pid)
+{
+    int i;
+
+    for (i = 0; i < child_count; i++) {
+        if (children[i].state == CHILD_RUNNING && children[i].pid == pid)
+            return &children[i];
+    }
+    return NULL;
+}
+
+/* Biten bir çocuğun nasıl bittiğine bakar ve gerekirse yeniden başlatır */
+static void handle_exit(child_t *c, int status)
+{
+    char desc[96];
+
+    describe_status(status, desc, sizeof(desc));
+
+    if (shutting_down) {
+        c->state = CHILD_STOPPED;
+        log_event("worker %d (pid %d) stopped: %s", c->id, (int)c->pid, desc);
+        return;
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        c->state = CHILD_EXITED;
+        log_event("worker %d (pid %d) finished normally: %s",
+                  c->id, (int)c->pid, desc);
+        return;
+    }
+
+    /* sıfırdan farklı çıkış kodu veya sinyal ile ölüm */
+    log_event("worker %d (pid %d) terminated unexpectedly: %s",
+              c->id, (int)c->pid, desc);
+
+    if (c->restarts >= MAX_RESTARTS) {
+        c->state = CHILD_FAILED;
+        log_event("worker %d reached restart limit (%d), not restarting",
+                  c->id, MAX_RESTARTS);
+        return;
+    }
+
+    c->restarts++;
+    log_event("restarting worker %d (attempt %d/%d)",
+              c->id, c->restarts, MAX_RESTARTS);
+    if (spawn_child(c) < 0)
+        c->state = CHILD_FAILED;
+}
+
+void pm_reap_children(void)
+{
+    int status;
+    pid_t pid;
+    child_t *c;
+
+    /*
+     * Birden fazla çocuk aynı anda ölürse SIGCHLD'ler birleşip tek sinyal
+     * olarak gelebilir. Bu yüzden WNOHANG ile döngüde hepsini topluyoruz.
+     */
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        c = find_child(pid);
+        if (c == NULL) {
+            log_event("reaped unknown child pid %d", (int)pid);
+            continue;
+        }
+        handle_exit(c, status);
+    }
+
+    if (pid == -1 && errno != ECHILD)
+        log_event("waitpid failed: %s", strerror(errno));
+}
+
+void pm_begin_shutdown(void)
+{
+    shutting_down = 1;
 }
 
 void pm_signal_running(int signo)
