@@ -30,6 +30,9 @@ typedef struct {
 int  pm_init(const char *worker_path, int count, char *specs[]);
 int  pm_start_all(void);
 
+/* Kapanış */
+void pm_signal_running(int signo);
+
 int            pm_running_count(void);
 const child_t *pm_children(int *count);
 const char    *pm_state_name(child_state_t state);

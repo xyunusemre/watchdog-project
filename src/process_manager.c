@@ -79,6 +79,14 @@ static int spawn_child(child_t *c)
         char id_arg[16];
         char sec_arg[16];
         char *args[5];
+        sigset_t empty;
+
+        /*
+         * Watchdog sinyalleri bloklu tutuyor ve bu maske exec'ten sonra da
+         * geçerli kalır. Worker'ın SIGTERM alabilmesi için maskeyi temizle.
+         */
+        sigemptyset(&empty);
+        sigprocmask(SIG_SETMASK, &empty, NULL);
 
         snprintf(id_arg, sizeof(id_arg), "%d", c->id);
         snprintf(sec_arg, sizeof(sec_arg), "%d", c->seconds);
@@ -109,6 +117,21 @@ int pm_start_all(void)
             return -1;
     }
     return 0;
+}
+
+void pm_signal_running(int signo)
+{
+    int i;
+
+    for (i = 0; i < child_count; i++) {
+        child_t *c = &children[i];
+
+        if (c->state != CHILD_RUNNING)
+            continue;
+        if (kill(c->pid, signo) == -1 && errno != ESRCH)
+            log_event("kill(%d, %d) failed: %s",
+                      (int)c->pid, signo, strerror(errno));
+    }
 }
 
 int pm_running_count(void)

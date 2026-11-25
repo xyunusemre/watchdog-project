@@ -3,6 +3,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "signal_manager.h"
 #include "process_manager.h"
 #include "logger.h"
 
@@ -21,12 +22,25 @@ static void print_usage(const char *prog)
             prog, MAX_CHILDREN);
 }
 
+static void run_main_loop(void)
+{
+    while (!g_shutdown_requested) {
+        sm_wait_for_signal();
+
+        if (g_shutdown_requested)
+            break;
+
+        if (g_child_exited) {
+            g_child_exited = 0;
+            log_event("SIGCHLD received"); /* toplama işi sonraki adımda */
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     char **specs = default_specs;
     int count = (int)(sizeof(default_specs) / sizeof(default_specs[0]));
-    int status;
-    pid_t pid;
 
     if (argc > 1) {
         specs = argv + 1;
@@ -35,6 +49,11 @@ int main(int argc, char *argv[])
 
     if (log_open(LOG_FILE) < 0) {
         perror("log_open");
+        return EXIT_FAILURE;
+    }
+    if (sm_install_handlers() < 0) {
+        perror("sm_install_handlers");
+        log_close();
         return EXIT_FAILURE;
     }
     if (pm_init(WORKER_PATH, count, specs) < 0) {
@@ -52,9 +71,15 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    /* Geçici: çocuklar bitene kadar bekle. Sonraki adımlarda SIGCHLD ile değişecek. */
-    while ((pid = wait(&status)) > 0)
-        log_event("child pid %d finished", (int)pid);
+    run_main_loop();
+
+    log_event("%s received, stopping workers",
+              sm_signal_name(g_shutdown_requested));
+
+    /* Geçici kapanış: hepsine SIGTERM gönder ve bekle. Zaman aşımı sonraki adımlarda. */
+    pm_signal_running(SIGTERM);
+    while (wait(NULL) > 0)
+        ;
 
     log_event("watchdog stopped");
     log_close();
