@@ -3,3 +3,4 @@ watchdog
 worker
 *.o
 *.log
+tests/output/
