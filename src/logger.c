@@ -92,3 +92,30 @@ void log_event(const char *fmt, ...)
     line[len++] = '\n';
     emit_line(line, len);
 }
+
+void log_status_report(const child_t *children, int count)
+{
+    time_t now = time(NULL);
+    int running = 0;
+    int i;
+
+    for (i = 0; i < count; i++) {
+        if (children[i].state == CHILD_RUNNING)
+            running++;
+    }
+
+    log_event("status report (SIGUSR1): %d worker(s), %d running", count, running);
+    for (i = 0; i < count; i++) {
+        const child_t *c = &children[i];
+
+        if (c->state == CHILD_RUNNING)
+            log_event("  worker %d | pid %d | mode %s | state %s | restarts %d/%d | uptime %lds",
+                      c->id, (int)c->pid, c->mode, pm_state_name(c->state),
+                      c->restarts, MAX_RESTARTS, (long)(now - c->started_at));
+        else
+            log_event("  worker %d | last pid %d | mode %s | state %s | restarts %d/%d",
+                      c->id, (int)c->pid, c->mode, pm_state_name(c->state),
+                      c->restarts, MAX_RESTARTS);
+    }
+    log_event("end of status report");
+}
