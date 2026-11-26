@@ -10,316 +10,112 @@
 #include "process_manager.h"
 #include "logger.h"
 
-static child_t     children[MAX_CHILDREN];
-static int         child_count   = 0;
-static const char *worker_path   = NULL;
-static int         shutting_down = 0;
+static child_t     g_workers[MAX_CHILDREN];
+static int         g_worker_count = 0;
+static const char *g_binary_path  = NULL;
+static int         g_shutting_down = 0;
 
-/* "exit:10" gibi bir tanımı mode ve saniye olarak ayırır */
-static int parse_spec(const char *spec, child_t *c)
+static int parse_worker_spec(const char *spec, child_t *entry)
 {
-    const char *colon = strchr(spec, ':');
-    size_t len = colon ? (size_t)(colon - spec) : strlen(spec);
-    char *end;
-    long sec = 0;
+    char mode_tmp[MODE_LEN];
+    int sec_val = 0;
+    char trailing;
 
-    if (len == 0 || len >= MODE_LEN)
+    if (spec == NULL || spec[0] == '\0')
         return -1;
-    memcpy(c->mode, spec, len);
-    c->mode[len] = '\0';
 
-    if (colon) {
-        errno = 0;
-        sec = strtol(colon + 1, &end, 10);
-        if (errno != 0 || *end != '\0' || sec <= 0 || sec > 3600)
+    if (strchr(spec, ':') != NULL) {
+        if (sscanf(spec, "%15[^:]:%d%c", mode_tmp, &sec_val, &trailing) != 2)
+            return -1;
+        if (sec_val <= 0 || sec_val > 3600)
+            return -1;
+        if (strcmp(mode_tmp, "exit") != 0 && strcmp(mode_tmp, "crash") != 0)
+            return -1;
+    } else {
+        if (strlen(spec) >= MODE_LEN)
+            return -1;
+        snprintf(mode_tmp, sizeof(mode_tmp), "%s", spec);
+        if (strcmp(mode_tmp, "loop") != 0 && strcmp(mode_tmp, "stubborn") != 0)
             return -1;
     }
-    c->seconds = (int)sec;
 
-    if (strcmp(c->mode, "loop") == 0 || strcmp(c->mode, "stubborn") == 0)
-        return colon ? -1 : 0;
-    if (strcmp(c->mode, "exit") == 0 || strcmp(c->mode, "crash") == 0)
-        return colon ? 0 : -1;
-    return -1;
+    snprintf(entry->mode, sizeof(entry->mode), "%s", mode_tmp);
+    entry->seconds = sec_val;
+    return 0;
 }
 
-int pm_init(const char *path, int count, char *specs[])
+int pm_init(const char *worker_path, int count, char *specs[])
 {
-    int i;
-
-    if (count < 2 || count > MAX_CHILDREN) {
-        fprintf(stderr, "worker count must be between 2 and %d\n", MAX_CHILDREN);
+    if (worker_path == NULL || count < 2 || count > MAX_CHILDREN) {
+        fprintf(stderr, "Worker count must be between 2 and %d\n", MAX_CHILDREN);
         return -1;
     }
 
-    worker_path = path;
-    child_count = count;
-    memset(children, 0, sizeof(children));
+    g_binary_path   = worker_path;
+    g_worker_count  = count;
+    g_shutting_down = 0;
+    memset(g_workers, 0, sizeof(g_workers));
 
-    for (i = 0; i < count; i++) {
-        children[i].id = i + 1;
-        children[i].state = CHILD_STOPPED;
-        if (parse_spec(specs[i], &children[i]) < 0) {
-            fprintf(stderr, "invalid worker spec: '%s'\n", specs[i]);
+    for (int i = 0; i < count; i++) {
+        g_workers[i].id    = i + 1;
+        g_workers[i].pid   = -1;
+        g_workers[i].state = CHILD_STOPPED;
+
+        if (parse_worker_spec(specs[i], &g_workers[i]) < 0) {
+            fprintf(stderr, "Invalid worker specification: %s\n", specs[i]);
             return -1;
         }
     }
     return 0;
 }
 
-static void describe_status(int status, char *buf, size_t size)
-{
-    if (WIFEXITED(status))
-        snprintf(buf, size, "exited with code %d", WEXITSTATUS(status));
-    else if (WIFSIGNALED(status))
-        snprintf(buf, size, "killed by signal %d (%s)",
-                 WTERMSIG(status), strsignal(WTERMSIG(status)));
-    else
-        snprintf(buf, size, "unknown status 0x%x", (unsigned)status);
-}
-
-static int spawn_child(child_t *c)
+static int spawn_worker(child_t *entry)
 {
     pid_t pid = fork();
 
     if (pid < 0) {
-        log_event("fork failed for worker %d: %s", c->id, strerror(errno));
+        log_event("fork failed for worker %d: %s", entry->id, strerror(errno));
         return -1;
     }
 
     if (pid == 0) {
-        char id_arg[16];
-        char sec_arg[16];
-        char *args[5];
-        sigset_t empty;
+        sigset_t empty_mask;
+        char id_buf[16];
+        char sec_buf[16];
+        char *exec_args[5];
 
-        /*
-         * Watchdog sinyalleri bloklu tutuyor ve bu maske exec'ten sonra da
-         * geçerli kalır. Worker'ın SIGTERM alabilmesi için maskeyi temizle.
-         */
-        sigemptyset(&empty);
-        sigprocmask(SIG_SETMASK, &empty, NULL);
+        /* Parent tarafından bloklanan sinyallerin child'a miras kalmasını engelle */
+        sigemptyset(&empty_mask);
+        sigprocmask(SIG_SETMASK, &empty_mask, NULL);
 
-        snprintf(id_arg, sizeof(id_arg), "%d", c->id);
-        snprintf(sec_arg, sizeof(sec_arg), "%d", c->seconds);
-        args[0] = "worker";
-        args[1] = id_arg;
-        args[2] = c->mode;
-        args[3] = sec_arg;
-        args[4] = NULL;
+        snprintf(id_buf, sizeof(id_buf), "%d", entry->id);
+        snprintf(sec_buf, sizeof(sec_buf), "%d", entry->seconds);
 
-        execv(worker_path, args);
+        exec_args[0] = "worker";
+        exec_args[1] = id_buf;
+        exec_args[2] = entry->mode;
+        exec_args[3] = sec_buf;
+        exec_args[4] = NULL;
+
+        execv(g_binary_path, exec_args);
         perror("execv");
-        _exit(127); /* exec başarısız: watchdog bunu beklenmedik bitiş sayar */
+        _exit(127);
     }
 
-    c->pid = pid;
-    c->state = CHILD_RUNNING;
-    c->started_at = time(NULL);
-    log_event("worker %d started (pid %d, mode %s)", c->id, (int)pid, c->mode);
+    entry->pid        = pid;
+    entry->state      = CHILD_RUNNING;
+    entry->started_at = time(NULL);
+
+    log_event("worker %d started (pid=%d, mode=%s)",
+              entry->id, (int)pid, entry->mode);
     return 0;
 }
 
 int pm_start_all(void)
 {
-    int i;
-
-    for (i = 0; i < child_count; i++) {
-        if (spawn_child(&children[i]) < 0)
+    for (int i = 0; i < g_worker_count; i++) {
+        if (spawn_worker(&g_workers[i]) < 0)
             return -1;
     }
     return 0;
-}
-
-static child_t *find_child(pid_t pid)
-{
-    int i;
-
-    for (i = 0; i < child_count; i++) {
-        if (children[i].state == CHILD_RUNNING && children[i].pid == pid)
-            return &children[i];
-    }
-    return NULL;
-}
-
-/* Biten bir çocuğun nasıl bittiğine bakar ve gerekirse yeniden başlatır */
-static void handle_exit(child_t *c, int status)
-{
-    char desc[96];
-
-    describe_status(status, desc, sizeof(desc));
-
-    if (shutting_down) {
-        c->state = CHILD_STOPPED;
-        log_event("worker %d (pid %d) stopped: %s", c->id, (int)c->pid, desc);
-        return;
-    }
-
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        c->state = CHILD_EXITED;
-        log_event("worker %d (pid %d) finished normally: %s",
-                  c->id, (int)c->pid, desc);
-        return;
-    }
-
-    /* sıfırdan farklı çıkış kodu veya sinyal ile ölüm */
-    log_event("worker %d (pid %d) terminated unexpectedly: %s",
-              c->id, (int)c->pid, desc);
-
-    if (c->restarts >= MAX_RESTARTS) {
-        c->state = CHILD_FAILED;
-        log_event("worker %d reached restart limit (%d), not restarting",
-                  c->id, MAX_RESTARTS);
-        return;
-    }
-
-    c->restarts++;
-    log_event("restarting worker %d (attempt %d/%d)",
-              c->id, c->restarts, MAX_RESTARTS);
-    if (spawn_child(c) < 0)
-        c->state = CHILD_FAILED;
-}
-
-void pm_reap_children(void)
-{
-    int status;
-    pid_t pid;
-    child_t *c;
-
-    /*
-     * Birden fazla çocuk aynı anda ölürse SIGCHLD'ler birleşip tek sinyal
-     * olarak gelebilir. Bu yüzden WNOHANG ile döngüde hepsini topluyoruz.
-     */
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        c = find_child(pid);
-        if (c == NULL) {
-            log_event("reaped unknown child pid %d", (int)pid);
-            continue;
-        }
-        handle_exit(c, status);
-    }
-
-    if (pid == -1 && errno != ECHILD)
-        log_event("waitpid failed: %s", strerror(errno));
-}
-
-int pm_start_timer(int interval_sec)
-{
-    struct itimerval tv;
-
-    tv.it_interval.tv_sec = interval_sec;
-    tv.it_interval.tv_usec = 0;
-    tv.it_value = tv.it_interval;
-
-    if (setitimer(ITIMER_REAL, &tv, NULL) == -1) {
-        log_event("setitimer failed: %s", strerror(errno));
-        return -1;
-    }
-    return 0;
-}
-
-void pm_stop_timer(void)
-{
-    struct itimerval tv;
-
-    memset(&tv, 0, sizeof(tv));
-    setitimer(ITIMER_REAL, &tv, NULL);
-}
-
-/*
- * SIGALRM ile periyodik olarak çağrılır. Kaçırılmış bir SIGCHLD varsa
- * toplar, sonra çalışıyor görünen her çocuğun gerçekten var olduğunu
- * kill(pid, 0) ile kontrol eder.
- */
-void pm_periodic_check(void)
-{
-    int i;
-    int alive = 0;
-
-    pm_reap_children();
-
-    for (i = 0; i < child_count; i++) {
-        child_t *c = &children[i];
-
-        if (c->state != CHILD_RUNNING)
-            continue;
-        if (kill(c->pid, 0) == -1 && errno == ESRCH)
-            log_event("periodic check: worker %d (pid %d) not found",
-                      c->id, (int)c->pid);
-        else
-            alive++;
-    }
-    log_event("periodic check: %d/%d workers running", alive, child_count);
-}
-
-void pm_begin_shutdown(void)
-{
-    shutting_down = 1;
-}
-
-void pm_signal_running(int signo)
-{
-    int i;
-
-    for (i = 0; i < child_count; i++) {
-        child_t *c = &children[i];
-
-        if (c->state != CHILD_RUNNING)
-            continue;
-        if (kill(c->pid, signo) == -1 && errno != ESRCH)
-            log_event("kill(%d, %d) failed: %s",
-                      (int)c->pid, signo, strerror(errno));
-    }
-}
-
-/* SIGKILL sonrası kalanları bloklayarak topla, zombi bırakma */
-void pm_wait_running(void)
-{
-    int i;
-    int status;
-    pid_t r;
-
-    for (i = 0; i < child_count; i++) {
-        child_t *c = &children[i];
-
-        if (c->state != CHILD_RUNNING)
-            continue;
-        do {
-            r = waitpid(c->pid, &status, 0);
-        } while (r == -1 && errno == EINTR);
-
-        if (r == c->pid)
-            handle_exit(c, status);
-        else
-            c->state = CHILD_STOPPED;
-    }
-}
-
-int pm_running_count(void)
-{
-    int i;
-    int n = 0;
-
-    for (i = 0; i < child_count; i++) {
-        if (children[i].state == CHILD_RUNNING)
-            n++;
-    }
-    return n;
-}
-
-const child_t *pm_children(int *count)
-{
-    *count = child_count;
-    return children;
-}
-
-const char *pm_state_name(child_state_t state)
-{
-    switch (state) {
-    case CHILD_RUNNING: return "RUNNING";
-    case CHILD_EXITED:  return "EXITED";
-    case CHILD_FAILED:  return "FAILED";
-    case CHILD_STOPPED: return "STOPPED";
-    default:            return "UNKNOWN";
-    }
 }

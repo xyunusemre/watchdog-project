@@ -8,43 +8,41 @@
 #define MAX_RESTARTS 3
 #define MODE_LEN     16
 
-/* Bir worker'ın watchdog gözünden durumu */
 typedef enum {
-    CHILD_RUNNING,  /* çalışıyor */
-    CHILD_EXITED,   /* kendi isteğiyle normal bitti (exit 0) */
-    CHILD_FAILED,   /* restart limiti aşıldı, bir daha başlatılmayacak */
-    CHILD_STOPPED   /* kapanış sırasında durduruldu */
+    CHILD_RUNNING = 0,
+    CHILD_EXITED,
+    CHILD_FAILED,
+    CHILD_STOPPED
 } child_state_t;
 
 typedef struct {
     int           id;
-    char          mode[MODE_LEN]; /* loop, exit, crash, stubborn */
-    int           seconds;        /* exit/crash modları için süre */
-    pid_t         pid;            /* çalışmıyorsa son pid */
+    char          mode[MODE_LEN];
+    int           seconds;
+    pid_t         pid;
     child_state_t state;
     int           restarts;
     time_t        started_at;
 } child_t;
 
-/* specs örnekleri: "loop", "exit:10", "crash:3", "stubborn" */
+/* Başlatma ve süreç yaşam döngüsü */
 int  pm_init(const char *worker_path, int count, char *specs[]);
 int  pm_start_all(void);
-
-/* SIGCHLD geldikten sonra ana döngüden çağrılır (handler içinden değil) */
 void pm_reap_children(void);
 
-/* SIGALRM ile tetiklenen periyodik kontrol */
+/* SIGALRM tabanlı periyodik kontrol */
 int  pm_start_timer(int interval_sec);
 void pm_stop_timer(void);
 void pm_periodic_check(void);
 
-/* Kapanış */
+/* Kontrollü kapanış (graceful shutdown) */
 void pm_begin_shutdown(void);
 void pm_signal_running(int signo);
 void pm_wait_running(void);
 
+/* Sorgulama fonksiyonları */
 int            pm_running_count(void);
 const child_t *pm_children(int *count);
 const char    *pm_state_name(child_state_t state);
 
-#endif
+#endif /* PROCESS_MANAGER_H */
