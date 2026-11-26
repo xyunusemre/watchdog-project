@@ -1,0 +1,49 @@
+
+== normal_operation: ./watchdog loop loop
+  [PASS] two workers started (2)
+  [PASS] both workers alive and children of watchdog (pids 1847, 1848)
+
+== normal_termination: ./watchdog exit:2 loop
+  [PASS] worker 1 detected as normal exit
+  [PASS] no restart after normal exit (0)
+
+== unexpected_termination: ./watchdog loop loop
+  [PASS] SIGKILL detected
+  [PASS] restart triggered
+  [PASS] worker 1 running again with new pid 1960
+
+== restart_limit: ./watchdog crash:1 loop
+  [PASS] exactly 3 restart attempts (3)
+  [PASS] restart limit reached
+  [PASS] no restart after the limit (3)
+  [PASS] other worker not affected
+
+== status_report: ./watchdog loop exit:1
+  [PASS] status report written
+  [PASS] running worker listed with pid
+  [PASS] finished worker listed as EXITED
+  [PASS] watchdog keeps running after SIGUSR1
+
+== shutdown_sigterm: ./watchdog loop stubborn
+  [PASS] watchdog exited after SIGTERM
+  [PASS] SIGTERM logged
+  [PASS] SIGTERM sent to workers
+  [PASS] stubborn worker killed with SIGKILL
+  [PASS] shutdown completed
+  [PASS] no worker left behind
+
+== shutdown_ctrl_c: ./watchdog loop loop
+  [PASS] watchdog exited after Ctrl+C
+  [PASS] SIGINT logged
+  [PASS] workers stopped by watchdog
+  [PASS] shutdown completed
+  [PASS] no worker left behind
+
+== log_verification: all scenario logs
+  [PASS] every log line has a timestamp
+  [PASS] process creation logged
+  [PASS] termination logged
+  [PASS] restart logged
+  [PASS] shutdown logged
+
+Result: 31 passed, 0 failed (logs in tests/output/)
