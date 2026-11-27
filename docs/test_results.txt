@@ -1,7 +1,7 @@
 
 == normal_operation: ./watchdog loop loop
   [PASS] two workers started (2)
-  [PASS] both workers alive and children of watchdog (pids 1847, 1848)
+  [PASS] both workers alive and children of watchdog (pids 567, 568)
 
 == normal_termination: ./watchdog exit:2 loop
   [PASS] worker 1 detected as normal exit
@@ -10,7 +10,7 @@
 == unexpected_termination: ./watchdog loop loop
   [PASS] SIGKILL detected
   [PASS] restart triggered
-  [PASS] worker 1 running again with new pid 1960
+  [PASS] worker 1 running again with new pid 674
 
 == restart_limit: ./watchdog crash:1 loop
   [PASS] exactly 3 restart attempts (3)
